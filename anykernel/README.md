@@ -1,16 +1,22 @@
-# Device-specific AnyKernel3 configuration
+# AnyKernel3 — Xiaomi Redmi Note 13 4G / NFC
 
-The workflow downloads upstream AnyKernel3, overlays this directory, then
-copies the compiled `Image` into the ZIP.
+This folder contains a device-specific AnyKernel3 installer for:
 
-Before building a flashable ZIP:
+- `sapphiren`
+- `sapphire`
+- Qualcomm Snapdragon 685 / SM6225
+- A/B boot partition layout
 
-1. Copy `anykernel.sh.example` to `anykernel.sh`.
-2. Configure device codename checks.
-3. Configure the correct boot image/partition and A/B slot behavior.
-4. Add any required ramdisk, vendor_boot, dtbo, or image handling for your device.
-5. Test against the exact device and recovery.
+The installer detects the active slot using AnyKernel3's `find_slot` helper
+and targets `/dev/block/bootdevice/by-name/boot${slot}`. It uses `split_boot`
+and `flash_boot` so the current boot ramdisk is retained while the kernel
+image is replaced.
 
-The workflow refuses to package if `anykernel/anykernel.sh` is missing or still
-contains template placeholders. There is no safe universal AnyKernel3 installer
-for every GKI device.
+Before flashing:
+1. Confirm the device reports `sapphiren` or `sapphire`.
+2. Keep a backup of the stock boot image for the active slot.
+3. Use a recovery compatible with the installed Android/boot image format.
+4. Do not flash if the device codename or partition layout differs.
+
+The installer does not guarantee compatibility across Android 14–17. Kernel
+KMI, vendor modules, boot image format, and device firmware still need testing.

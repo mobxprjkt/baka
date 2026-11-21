@@ -244,8 +244,11 @@ jobs:
             exit 1
           fi
 
-          if grep -Eq 'REPLACE_ME|YOUR_DEVICE|YOUR_BOOT_PARTITION' "$AK3_SCRIPT"; then
-            echo "::error::AnyKernel3 script still contains template placeholders."
+          if ! grep -q 'device.name1=sapphiren' "$AK3_SCRIPT" || \
+             ! grep -q 'device.name2=sapphire' "$AK3_SCRIPT" || \
+             ! grep -q 'block=/dev/block/bootdevice/by-name/boot' "$AK3_SCRIPT" || \
+             ! grep -q 'is_slot_device=1' "$AK3_SCRIPT"; then
+            echo "::error::AnyKernel3 installer does not match Sapphire A/B configuration."
             exit 1
           fi
 

@@ -41,7 +41,7 @@ Before flashing, verify:
 ## Repository setup
 
 1. Create a new GitHub repository and upload this project.
-2. Configure `anykernel/anykernel.sh` for your exact device.
+2. The included `anykernel/anykernel.sh` is configured for Xiaomi Redmi Note 13 4G/NFC (`sapphire` / `sapphiren`) A/B boot slots. Verify it against your installed partition map before flashing.
 3. Review and pin tested SukiSU and SUSFS refs before production releases.
 4. Open Actions -> Android GKI 5.15 - SukiSU Nova + SUSFS + KPM.
 5. Run workflow_dispatch.
@@ -72,7 +72,7 @@ are convenient for testing but are not immutable build inputs.
 
 ## Known boundaries
 
-- A generic AnyKernel3 ZIP cannot safely infer a device's boot partition.
+- The included AnyKernel3 installer targets the active `boot_a` / `boot_b` slot for Sapphire/Sapphiren. Do not use it on other devices.
 - SukiSU Nova's manager APK is not the same artifact as the kernel backend.
 - KPM is enabled by `CONFIG_KPM`; it is not a separate `.kpm` module.
 - SUSFS requires both the kernel-side patch and the KernelSU-side patch.
