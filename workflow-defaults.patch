@@ -1,0 +1,12 @@
+--- a/.github/workflows/kernel-build.yml
++++ b/.github/workflows/kernel-build.yml
+@@
+       sukisu_ref:
+         description: "SukiSU Nova kernel backend ref (branch, tag, or commit)"
+         required: true
+         type: string
+-        default: "main"
++        default: "builtin"
+@@
+-  SUKISU_REF: ${{ inputs.sukisu_ref || 'main' }}
++  SUKISU_REF: ${{ inputs.sukisu_ref || 'builtin' }}

@@ -2,51 +2,79 @@
 set -euo pipefail
 
 ROOT="$(pwd)"
-SETUP_URL="https://raw.githubusercontent.com/SukiSU-Nova/SukiSU-Nova/main/kernel/setup.sh"
-SETUP_FILE="$(mktemp)"
-
-: "${SUKISU_REF:=main}"
-
-echo "[SukiSU Nova] Downloading the official integration script"
-curl -fsSL "$SETUP_URL" -o "$SETUP_FILE"
-chmod +x "$SETUP_FILE"
-
-echo "[SukiSU Nova] Integrating kernel backend ref: $SUKISU_REF"
-# The official Nova setup script installs the kernel backend under ./KernelSU
-# and registers common/drivers/kernelsu.
-bash "$SETUP_FILE" "$SUKISU_REF"
-rm -f "$SETUP_FILE"
-
+REPO_URL="https://github.com/SukiSU-Nova/SukiSU-Nova.git"
 KSU_ROOT="$ROOT/KernelSU"
 KSU_KERNEL="$KSU_ROOT/kernel"
+DRIVER_DIR="$ROOT/common/drivers"
 
-if [[ ! -d "$KSU_KERNEL" ]]; then
-  echo "::error::SukiSU Nova setup did not create KernelSU/kernel."
-  echo "Check the upstream setup script and backend repository availability."
-  exit 1
-fi
+# Nova builtin is the Nova backend variant with native SUSFS + KPM support.
+: "${SUKISU_REF:=builtin}"
 
-if [[ ! -L "$ROOT/common/drivers/kernelsu" && ! -d "$ROOT/common/drivers/kernelsu" ]]; then
-  echo "::error::drivers/kernelsu was not registered."
+[[ -d "$DRIVER_DIR" ]] || {
+  echo "::error::common/drivers directory is missing."
   exit 1
-fi
+}
 
-if ! grep -q 'config KPM' "$KSU_KERNEL/Kconfig"; then
-  echo "::error::KPM Kconfig symbol was not found in the installed backend."
-  exit 1
-fi
+echo "[SukiSU Nova] Fetching official GitHub source: $SUKISU_REF"
+rm -rf "$KSU_ROOT"
+git clone --filter=blob:none --no-checkout "$REPO_URL" "$KSU_ROOT"
+git -C "$KSU_ROOT" fetch --depth=1 origin "$SUKISU_REF"
+git -C "$KSU_ROOT" checkout --detach FETCH_HEAD
 
-if ! grep -q 'CONFIG_KSU' "$ROOT/common/drivers/Makefile"; then
-  echo "::error::KSU driver entry was not found."
+for file in \
+  "$KSU_KERNEL/Kconfig" \
+  "$KSU_KERNEL/Makefile" \
+  "$KSU_KERNEL/ksu_main.c" \
+  "$KSU_KERNEL/feature/sucompat.c"; do
+  if [[ ! -s "$file" ]]; then
+    echo "::error::Expected Nova builtin source file missing: $file"
+    exit 1
+  fi
+done
+
+grep -qE '^[[:space:]]*config KSU$' "$KSU_KERNEL/Kconfig" || {
+  echo "::error::Nova KSU Kconfig symbol is missing."
   exit 1
-fi
+}
+grep -qE '^[[:space:]]*config KPM$' "$KSU_KERNEL/Kconfig" || {
+  echo "::error::Nova KPM Kconfig symbol is missing."
+  exit 1
+}
+grep -qE '^[[:space:]]*config KSU_SUSFS$' "$KSU_KERNEL/Kconfig" || {
+  echo "::error::This Nova ref does not provide native CONFIG_KSU_SUSFS. Use the Nova builtin branch/ref."
+  exit 1
+}
+grep -q 'susfs_init()' "$KSU_KERNEL/ksu_main.c" || {
+  echo "::error::Nova backend has no susfs_init() lifecycle call."
+  exit 1
+}
+grep -q 'CONFIG_KSU_SUSFS' "$KSU_KERNEL/feature/sucompat.c" || {
+  echo "::error::Nova sucompat.c is missing its SUSFS integration path."
+  exit 1
+}
+grep -q 'SUSFS_INLINE_HOOK' "$KSU_KERNEL/Makefile" || {
+  echo "::error::Nova Makefile does not identify its SUSFS inline-hook build path."
+  exit 1
+}
+
+ln -sfn "$(realpath --relative-to="$DRIVER_DIR" "$KSU_KERNEL")" "$DRIVER_DIR/kernelsu"
+
+DRIVER_MAKEFILE="$DRIVER_DIR/Makefile"
+DRIVER_KCONFIG="$DRIVER_DIR/Kconfig"
+
+grep -Fq 'obj-$(CONFIG_KSU) += kernelsu/' "$DRIVER_MAKEFILE" ||
+  printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$DRIVER_MAKEFILE"
+
+grep -Fq 'source "drivers/kernelsu/Kconfig"' "$DRIVER_KCONFIG" ||
+  sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' "$DRIVER_KCONFIG"
 
 {
-  echo "SukiSU Nova manager repository: https://github.com/SukiSU-Nova/SukiSU-Nova"
-  echo "Official setup script: $SETUP_URL"
+  echo "SukiSU Nova repository: $REPO_URL"
   echo "Requested backend ref: $SUKISU_REF"
-  echo "Installed backend commit: $(git -C "$KSU_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+  echo "Installed backend commit: $(git -C "$KSU_ROOT" rev-parse HEAD)"
+  echo "Native CONFIG_KSU_SUSFS: present"
+  echo "Native SUSFS init and sucompat integration: present"
   echo "KPM Kconfig: present"
 } | tee "$ROOT/integration-versions.txt"
 
-echo "[SukiSU Nova] Kernel backend integration completed."
+echo "[SukiSU Nova] Native SUSFS-capable backend integration completed."
