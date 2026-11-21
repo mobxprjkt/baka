@@ -4,96 +4,64 @@ set -euo pipefail
 ROOT="$(pwd)"
 COMMON="$ROOT/common"
 KSU_ROOT="$ROOT/KernelSU"
-KSU_KERNEL="$KSU_ROOT/kernel"
 SUSFS_DIR="$ROOT/susfs4ksu"
 
 : "${SUSFS_REPO:=https://gitlab.com/simonpunk/susfs4ksu.git}"
-: "${SUSFS_REF:=gki-android13-5.15}"
+: "${SUSFS_COMMIT:=c1d1da42b74771944207ec45aaceff9c57e84985}"
 
-fail() {
-  echo "::error::$*" >&2
-  exit 1
-}
+fail() { echo "::error::$*" >&2; exit 1; }
 
-# Do not attempt the legacy 10_enable_susfs_for_ksu.patch against Nova main.
-# Nova builtin already contains the corresponding KSU-side SUSFS implementation.
-[[ -d "$COMMON" ]] || fail "Linux common/ source directory is missing."
-[[ -d "$KSU_KERNEL" ]] || fail "SukiSU Nova backend is missing; run integrate-sukisu-nova.sh first."
+[[ -d "$COMMON" ]] || fail "Google common/ tree missing."
+[[ -d "$KSU_ROOT/kernel" ]] || fail "SukiSU Nova backend missing."
+[[ "$SUSFS_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "SUSFS_COMMIT must be a full SHA."
 
-for file in \
-  "$KSU_KERNEL/Kconfig" \
-  "$KSU_KERNEL/Makefile" \
-  "$KSU_KERNEL/ksu_main.c" \
-  "$KSU_KERNEL/feature/sucompat.c"; do
-  [[ -s "$file" ]] || fail "Nova builtin integration source missing: $file"
-done
-
-grep -qE '^[[:space:]]*config KSU_SUSFS$' "$KSU_KERNEL/Kconfig" ||
-  fail "Backend lacks CONFIG_KSU_SUSFS. Refusing to bypass the KSU-side integration failure; select SukiSU Nova builtin."
-grep -q 'susfs_init()' "$KSU_KERNEL/ksu_main.c" ||
-  fail "Nova SUSFS init hook is missing; refusing to continue."
-grep -q 'CONFIG_KSU_SUSFS' "$KSU_KERNEL/feature/sucompat.c" ||
-  fail "Nova sucompat SUSFS path is missing; refusing to continue."
-grep -q 'SUSFS_INLINE_HOOK' "$KSU_KERNEL/Makefile" ||
-  fail "Nova backend does not advertise its native SUSFS inline-hook build mode."
-
-echo "[SUSFS] Fetching SUSFS source branch: $SUSFS_REF"
 rm -rf "$SUSFS_DIR"
-git clone --depth=1 --branch "$SUSFS_REF" "$SUSFS_REPO" "$SUSFS_DIR"
+git clone --filter=blob:none "$SUSFS_REPO" "$SUSFS_DIR"
+git -C "$SUSFS_DIR" fetch --depth=1 origin "$SUSFS_COMMIT"
+git -C "$SUSFS_DIR" checkout --detach FETCH_HEAD
+[[ "$(git -C "$SUSFS_DIR" rev-parse HEAD)" == "$SUSFS_COMMIT" ]] || fail "SUSFS pin mismatch."
 
 PATCH_DIR="$SUSFS_DIR/kernel_patches"
-KERNEL_PATCH="$PATCH_DIR/50_add_susfs_in_kernel-5.15.patch"
+KERNEL_PATCH="$PATCH_DIR/50_add_susfs_in_gki-android13-5.15.patch"
+KSU_PATCH="$PATCH_DIR/KernelSU/10_enable_susfs_for_ksu.patch"
 
-[[ -s "$KERNEL_PATCH" ]] ||
-  fail "Required Linux 5.15 kernel patch not found: $KERNEL_PATCH"
-[[ -d "$PATCH_DIR/fs" ]] ||
-  fail "SUSFS fs/ source directory is missing."
-[[ -d "$PATCH_DIR/include/linux" ]] ||
-  fail "SUSFS include/linux/ source directory is missing."
+[[ -s "$KERNEL_PATCH" ]] || fail "Missing GKI patch: $KERNEL_PATCH"
+[[ -s "$KSU_PATCH" ]] || fail "Missing KSU integration patch: $KSU_PATCH"
+[[ -s "$PATCH_DIR/fs/susfs.c" ]] || fail "Missing fs/susfs.c."
+[[ -s "$PATCH_DIR/include/linux/susfs.h" ]] || fail "Missing include/linux/susfs.h."
 
-[[ -s "$PATCH_DIR/fs/susfs.c" ]] ||
-  fail "SUSFS fs/susfs.c source is missing."
-[[ -s "$PATCH_DIR/include/linux/susfs.h" ]] ||
-  fail "SUSFS include/linux/susfs.h header is missing."
-
-# Copy the kernel-side implementation exactly as documented by SUSFS.
 cp -a "$PATCH_DIR/fs/." "$COMMON/fs/"
 cp -a "$PATCH_DIR/include/linux/." "$COMMON/include/linux/"
 
-# Apply the kernel patch strictly. No --reject, || true, or continue-on-error.
-if (
-  cd "$COMMON"
-  git apply --check "$KERNEL_PATCH"
-); then
-  (
-    cd "$COMMON"
-    git apply "$KERNEL_PATCH"
-  )
-  echo "[SUSFS] Linux 5.15 kernel patch applied."
-elif (
-  cd "$COMMON"
-  git apply --reverse --check "$KERNEL_PATCH"
-); then
-  echo "[SUSFS] Exact Linux 5.15 kernel patch is already present."
-else
-  fail "Linux 5.15 SUSFS kernel patch does not apply cleanly. Build stopped; inspect patch context and source revision."
-fi
+apply_patch_strict() {
+  local tree="$1" patch_file="$2" label="$3"
+  if (cd "$tree" && git apply --check "$patch_file"); then
+    (cd "$tree" && git apply "$patch_file")
+    echo "[$label] applied cleanly"
+  elif (cd "$tree" && git apply --reverse --check "$patch_file"); then
+    echo "[$label] already applied"
+  else
+    echo "::error::$label patch does not apply cleanly to the pinned source."
+    echo "Do not delete .rej files or skip this step. Update the compatibility"
+    echo "recovery against the exact upstream patch and SukiSU source revision."
+    exit 1
+  fi
+}
 
-grep -q 'susfs.o' "$COMMON/fs/Makefile" ||
-  fail "Kernel patch did not register susfs.o in common/fs/Makefile."
-grep -q 'SUSFS_VERSION' "$COMMON/include/linux/susfs.h" ||
-  fail "SUSFS version declaration is missing after source installation."
-grep -qE '^[[:space:]]*config KSU_SUSFS$' "$KSU_KERNEL/Kconfig" ||
-  fail "Nova CONFIG_KSU_SUSFS disappeared after integration."
+# Both halves are required: the GKI patch adds Linux-side SUSFS; the KSU patch
+# adds CONFIG_KSU_SUSFS and connects SukiSU's own hooks/lifecycle to SUSFS.
+apply_patch_strict "$COMMON" "$KERNEL_PATCH" "SUSFS GKI 5.15"
+apply_patch_strict "$KSU_ROOT" "$KSU_PATCH" "SUSFS SukiSU backend"
+
+grep -q 'susfs.o' "$COMMON/fs/Makefile" || fail "susfs.o not registered in fs/Makefile."
+grep -q 'SUSFS_VERSION' "$COMMON/include/linux/susfs.h" || fail "SUSFS header verification failed."
+grep -Rqs 'config KSU_SUSFS' "$KSU_ROOT/kernel" || fail "CONFIG_KSU_SUSFS missing after KSU patch."
 
 {
   echo "SUSFS repository: $SUSFS_REPO"
-  echo "SUSFS ref: $SUSFS_REF"
   echo "SUSFS commit: $(git -C "$SUSFS_DIR" rev-parse HEAD)"
-  echo "Linux kernel patch: $(basename "$KERNEL_PATCH")"
-  echo "Nova backend commit: $(git -C "$KSU_ROOT" rev-parse HEAD)"
-  echo "KSU-side SUSFS: provided natively by SukiSU Nova builtin backend"
-  echo "Kernel-side SUSFS: patch applied and verified"
+  echo "SUSFS GKI patch: $(basename "$KERNEL_PATCH")"
+  echo "SUSFS KSU patch: applied and verified"
 } | tee -a "$ROOT/integration-versions.txt"
 
-echo "[SUSFS] Nova-native KSU integration and Linux 5.15 SUSFS integration verified."
+echo "[SUSFS] Both kernel and SukiSU-side integrations verified."

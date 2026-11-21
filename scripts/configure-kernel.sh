@@ -7,25 +7,16 @@ DEFCONFIG="$COMMON/arch/arm64/configs/gki_defconfig"
 CONFIG_TOOL="$COMMON/scripts/config"
 KSU_KCONFIG="$ROOT/KernelSU/kernel/Kconfig"
 
-test -f "$DEFCONFIG"
-test -f "$CONFIG_TOOL"
-test -f "$KSU_KCONFIG"
+[[ -f "$DEFCONFIG" ]] || { echo "::error::gki_defconfig missing"; exit 1; }
+[[ -f "$CONFIG_TOOL" ]] || { echo "::error::scripts/config missing"; exit 1; }
+[[ -f "$KSU_KCONFIG" ]] || { echo "::error::SukiSU Kconfig missing"; exit 1; }
 
-# Refuse to silently build without the requested integrations.
-for symbol in KSU KPM; do
-  if ! grep -qE "^[[:space:]]*config ${symbol}$" "$KSU_KCONFIG"; then
-    echo "::error::${symbol} is missing from SukiSU kernel Kconfig."
-    exit 1
-  fi
+for symbol in KSU KPM KSU_SUSFS; do
+  grep -qE "^[[:space:]]*config ${symbol}$" "$KSU_KCONFIG" ||
+    { echo "::error::${symbol} is not defined in SukiSU Kconfig"; exit 1; }
 done
 
-if ! grep -qE '^[[:space:]]*config KSU_SUSFS$' "$KSU_KCONFIG"; then
-  echo "::error::SUSFS Kconfig is missing. Integration did not complete."
-  exit 1
-fi
-
 chmod +x "$CONFIG_TOOL"
-
 "$CONFIG_TOOL" --file "$DEFCONFIG" \
   --enable KPROBES \
   --enable KRETPROBES \
@@ -36,12 +27,9 @@ chmod +x "$CONFIG_TOOL"
   --enable KPM \
   --enable KSU_SUSFS
 
-# Verify the requested symbols are present in the base defconfig.
 for symbol in KPROBES EXT4_FS KALLSYMS KALLSYMS_ALL KSU KPM KSU_SUSFS; do
-  if ! grep -qE "^CONFIG_${symbol}=y$" "$DEFCONFIG"; then
-    echo "::error::CONFIG_${symbol}=y was not written to gki_defconfig."
-    exit 1
-  fi
+  grep -qE "^CONFIG_${symbol}=y$" "$DEFCONFIG" ||
+    { echo "::error::CONFIG_${symbol}=y was not written"; exit 1; }
 done
 
-echo "Base GKI defconfig updated."
+echo "[Kconfig] GKI baseline updated. Device-specific configuration remains to be validated."

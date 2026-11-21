@@ -1,46 +1,62 @@
-# SukiSU Nova + SUSFS port for GKI 5.15
+# Sapphire(n) — Google Common GKI LTS 5.15 build project
 
-## Why this changes the backend ref
+This is a reproducible **build source project**, not a prebuilt kernel. Target:
+- Xiaomi Redmi Note 13 4G NFC (`sapphiren` / `sapphire`)
+- Qualcomm SM6225 / Snapdragon 685
+- Google Android Common Kernel: `common-android13-5.15-lts`
+- SukiSU Nova + SUSFS + KPM
+- Google Clang from the Android kernel manifest
+- ccache, Image output, AnyKernel3 ZIP
 
-The old integration tried to apply SUSFS `10_enable_susfs_for_ksu.patch` to SukiSU Nova `main`.
-That patch targets a different KernelSU internal layout and rewrites/removes many unrelated
-hook and lifecycle paths. It is not a safe path-prefix or filename mismatch.
+## Important device compatibility warning
 
-SukiSU Nova's `builtin` branch contains the corresponding KSU-side SUSFS integration natively:
-- `CONFIG_KSU_SUSFS` and SUSFS sub-options in `kernel/Kconfig`
-- `susfs_init()` in `kernel/ksu_main.c`
-- SUSFS-aware `sucompat.c`
-- the `SUSFS_INLINE_HOOK` build path in `kernel/Makefile`
-- KPM remains available in the same Nova Kconfig
+Google Common GKI is a generic kernel base. It does not automatically include
+all Sapphire device-specific configuration, DTB/DTBO, vendor modules, firmware,
+or the exact boot image layout. This project deliberately does **not** invent
+a `sapphiren_defconfig` or claim that a generic GKI `Image` is boot-tested.
 
-Therefore the KSU-side functionality is supplied by the Nova backend itself, not silently omitted.
-The separate SUSFS Linux 5.15 kernel patch remains mandatory and is applied strictly by
-`scripts/integrate-susfs.sh`.
+The workflow builds the Google common GKI image and packages it into an
+AnyKernel3 installer. Treat the resulting ZIP as experimental until it has
+been matched against the exact ROM/vendor boot image and tested with a backup
+boot image available. Prefer a temporary `fastboot boot` test where supported.
 
-## Apply
+## Build
 
-1. Replace the two scripts in your repository with the versions in `scripts/`.
-2. Apply `workflow-defaults.patch` to `.github/workflows/kernel-build.yml`, or manually change
-   the `sukisu_ref` default and `SUKISU_REF` fallback from `main` to `builtin`.
-3. Run the workflow with:
-   - `sukisu_ref=builtin`
-   - `susfs_ref=gki-android13-5.15`
-   - `manifest_branch=common-android13-5.15-lts`
+1. Upload/extract this project into a GitHub repository.
+2. Open **Actions → Google Common GKI 5.15 (Sapphire)**.
+3. Run workflow manually with the defaults.
+4. Download the workflow artifact after a successful run.
 
-## Strict failure behavior
+The default integration refs are pinned:
+- SukiSU Nova Forgejo commit: `a81ed4e3d9801e740d132ec0614fdc62735e2b69`
+- SUSFS commit: `c1d1da42b74771944207ec45aaceff9c57e84985`
 
-The SUSFS script:
-- fails if the Nova backend lacks native SUSFS symbols/hooks;
-- copies the SUSFS kernel source and headers;
-- checks and applies `50_add_susfs_in_kernel-5.15.patch`;
-- fails if the patch cannot apply cleanly;
-- verifies `susfs.o` and the SUSFS header after integration.
+The SUSFS kernel patch and KernelSU-side patch are both mandatory. The
+integration script stops on a rejected hunk; it never reports SUSFS enabled
+when the KSU-side integration is incomplete. If upstream source layout drifts,
+the build stops and must be updated using the narrowly-scoped compatibility
+recovery logic from `nikakvo/GKI_Kernel_SukiSU`, not by ignoring `.rej` files.
 
-It does not use `git apply --reject`, `|| true`, or continue after a failed patch.
+## Device-specific completion still required
 
-## Important
+Before treating this as a daily-driver kernel, compare the generated config,
+KMI, modules, DTB/DTBO and boot/vendor_boot arrangement against the stock
+Sapphire ROM. `gki_defconfig` is used as the Google GKI baseline; this is not a
+replacement for a verified Sapphire device config. Do not flash on the basis
+of a successful compile alone.
 
-This is a source integration fix, not a successful build or device validation claim.
-The next Actions run must still compile the kernel. Only after the build succeeds should the
-resulting boot image/AnyKernel package be tested on the exact `sapphiren` device and stock
-boot image. Keep a recovery path and backup of the original boot image.
+## Layout
+
+- `.github/workflows/kernel-build.yml` — GitHub Actions build pipeline
+- `scripts/integrate-sukisu-nova.sh` — pinned SukiSU Nova checkout + driver link
+- `scripts/integrate-susfs.sh` — SUSFS kernel and KSU-side patch application
+- `scripts/configure-kernel.sh` — Kconfig enablement and verification
+- `scripts/fetch-manager-apks.sh` — manager APK from the selected GitHub release
+- `anykernel/anykernel.sh` — A/B boot-slot installer for Sapphire/Sapphiren
+
+## Recovery
+
+Keep a copy of the exact stock `boot.img` and `vendor_boot.img`. If the device
+fails to boot, restore the original boot image using the matching fastboot
+partition command for the current firmware. Never use an image from another
+device or ROM build.

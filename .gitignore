@@ -1,0 +1,4 @@
+.ccache/
+kernel-src/
+dist/
+*.zip

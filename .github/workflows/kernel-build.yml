@@ -1,103 +1,66 @@
-name: Android GKI 5.15 - SukiSU Nova + SUSFS + KPM
+name: Google Common GKI 5.15 (Sapphire)
 
 on:
   workflow_dispatch:
     inputs:
       android_target:
-        description: "Android version running on the target device (label only)"
+        description: "Android userspace version label (does not change GKI branch)"
         required: true
         type: choice
         options: ["13", "14", "15", "16", "17"]
         default: "14"
-      manifest_branch:
-        description: "Google kernel manifest branch"
-        required: true
-        type: string
-        default: "common-android13-5.15-lts"
-      sukisu_ref:
-        description: "SukiSU Nova kernel backend ref (branch, tag, or commit)"
-        required: true
-        type: string
-        default: "main"
-      susfs_ref:
-        description: "SUSFS branch"
-        required: true
-        type: string
-        default: "gki-android13-5.15"
-      manager_repo:
-        description: "SukiSU Nova manager repository"
-        required: true
-        type: string
-        default: "SukiSU-Nova/SukiSU-Nova"
       publish_release:
-        description: "Publish a GitHub Release after successful build"
+        description: "Publish successful artifacts as a GitHub Release"
         required: true
         type: boolean
         default: false
       release_tag:
-        description: "Release tag (workflow_dispatch)"
+        description: "Release tag"
         required: false
         type: string
-        default: "gki-5.15-nova-test"
-
-  push:
-    tags:
-      - "v*"
+        default: "sapphiren-gki515-test"
 
 permissions:
   contents: write
 
 concurrency:
-  group: gki-515-nova-${{ github.ref }}
+  group: sapphiren-gki515-${{ github.ref }}
   cancel-in-progress: true
 
 env:
+  MANIFEST_URL: https://android.googlesource.com/kernel/manifest
+  MANIFEST_BRANCH: common-android13-5.15-lts
+  SUKISU_REPO: https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git
+  SUKISU_COMMIT: a81ed4e3d9801e740d132ec0614fdc62735e2b69
+  SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+  SUSFS_COMMIT: c1d1da42b74771944207ec45aaceff9c57e84985
   ARCH: arm64
   SUBARCH: arm64
   LLVM: "1"
   LLVM_IAS: "1"
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 8G
-  KERNEL_MANIFEST_URL: https://android.googlesource.com/kernel/manifest
-  KERNEL_MANIFEST_BRANCH: ${{ inputs.manifest_branch || 'common-android13-5.15-lts' }}
-  SUKISU_REF: ${{ inputs.sukisu_ref || 'main' }}
-  SUSFS_REF: ${{ inputs.susfs_ref || 'gki-android13-5.15' }}
-  MANAGER_REPO: ${{ inputs.manager_repo || 'SukiSU-Nova/SukiSU-Nova' }}
   ANDROID_TARGET: ${{ inputs.android_target || '14' }}
 
 jobs:
   build:
-    name: Build GKI 5.15 / SukiSU Nova
     runs-on: ubuntu-22.04
     timeout-minutes: 360
-
     steps:
-      - name: Checkout builder repository
+      - name: Checkout build project
         uses: actions/checkout@v4
         with:
           path: builder
-          fetch-depth: 1
 
-      - name: Free runner disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
-            /opt/ghc /usr/local/share/boost /usr/local/.ghcup
-          df -h
-
-      - name: Install dependencies and repo tool
+      - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential ccache curl flex git jq \
-            libelf-dev libssl-dev lz4 make pahole \
-            python3 python3-pip python-is-python3 \
-            rsync unzip zip xz-utils zlib1g-dev \
-            device-tree-compiler
-
-          sudo curl -fsSL \
-            https://storage.googleapis.com/git-repo-downloads/repo \
+          sudo apt-get install -y bc bison build-essential ccache curl flex git \
+            jq libelf-dev libssl-dev lz4 make pahole patch python3 rsync unzip \
+            zip xz-utils zlib1g-dev device-tree-compiler
+          sudo curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo \
             -o /usr/local/bin/repo
           sudo chmod 0755 /usr/local/bin/repo
           repo --version
@@ -106,12 +69,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ccache
-          key: ${{ runner.os }}-gki515-nova-${{ env.KERNEL_MANIFEST_BRANCH }}-${{ github.sha }}
+          key: ${{ runner.os }}-sapphiren-gki515-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-gki515-nova-${{ env.KERNEL_MANIFEST_BRANCH }}-
+            ${{ runner.os }}-sapphiren-gki515-
 
       - name: Configure ccache
-        shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$CCACHE_DIR"
@@ -119,194 +81,127 @@ jobs:
           ccache --set-config=compiler_check=content
           ccache --set-config=sloppiness=time_macros
           ccache --zero-stats
-          ccache --show-stats
 
-      - name: Sync Google Android 13 5.15 GKI source
+      - name: Sync Google Common GKI 5.15 LTS
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p kernel-src
           cd kernel-src
-
-          repo init \
-            -u "$KERNEL_MANIFEST_URL" \
-            -b "$KERNEL_MANIFEST_BRANCH" \
-            --depth=1
-
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
           repo sync -c -j4 --no-tags --optimized-fetch --fail-fast
           repo manifest -r -o "$GITHUB_WORKSPACE/manifest.lock.xml"
-
           test -d common
           test -d build
           test -f common/build.config.gki.aarch64
           test -f build/build.sh
-
-          echo "Kernel common revision:"
           git -C common rev-parse HEAD
-          echo "Manifest branch: $KERNEL_MANIFEST_BRANCH"
 
-      - name: Integrate SukiSU Nova backend
+      - name: Integrate SukiSU Nova
         working-directory: kernel-src
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash ../builder/scripts/integrate-sukisu-nova.sh
+        run: bash ../builder/scripts/integrate-sukisu-nova.sh
 
-      - name: Integrate SUSFS for GKI 5.15
+      - name: Integrate SUSFS (kernel + KSU backend)
         working-directory: kernel-src
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash ../builder/scripts/integrate-susfs.sh
+        run: bash ../builder/scripts/integrate-susfs.sh
 
-      - name: Configure KSU, SUSFS and KPM
+      - name: Configure GKI Kconfig
         working-directory: kernel-src
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash ../builder/scripts/configure-kernel.sh
+        run: bash ../builder/scripts/configure-kernel.sh
 
-      - name: Download SukiSU Nova manager APK
-        shell: bash
+      - name: Fetch SukiSU Nova manager APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
           mkdir -p dist/manager
           bash builder/scripts/fetch-manager-apks.sh \
-            "$MANAGER_REPO" "$GITHUB_WORKSPACE/dist/manager"
+            "SukiSU-Nova/SukiSU-Nova" "$GITHUB_WORKSPACE/dist/manager"
 
-      - name: Locate Google Clang from Android manifest
+      - name: Locate Google Clang
         working-directory: kernel-src
         shell: bash
         run: |
           set -euo pipefail
-
-          CLANG_BIN="$(find -L prebuilts/clang/host/linux-x86 \
-            -type f -path '*/bin/clang' -printf '%h\n' \
-            | sort -V | tail -n 1)"
-
-          if [[ -z "$CLANG_BIN" ]]; then
-            echo "::error::Google Clang was not found in the synced manifest."
+          CLANG_BIN="$(find -L prebuilts/clang/host/linux-x86 -type f \
+            -path '*/bin/clang' -printf '%h\n' | sort -V | tail -n 1)"
+          test -n "$CLANG_BIN" || {
+            echo "::error::Google Clang missing from synced manifest"
             exit 1
-          fi
-
+          }
           FULL_CLANG_BIN="$GITHUB_WORKSPACE/kernel-src/$CLANG_BIN"
           echo "$FULL_CLANG_BIN" >> "$GITHUB_PATH"
           echo "CLANG_BIN=$FULL_CLANG_BIN" >> "$GITHUB_ENV"
           "$FULL_CLANG_BIN/clang" --version
 
-      - name: Build GKI 5.15 Image
+      - name: Build Google GKI Image
         working-directory: kernel-src
-        shell: bash
         env:
           BUILD_CONFIG: common/build.config.gki.aarch64
           DIST_DIR: ${{ github.workspace }}/dist/kernel
           CC: ccache clang
           HOSTCC: ccache clang
-          LLVM: "1"
-          LLVM_IAS: "1"
-          ARCH: arm64
-          SUBARCH: arm64
           CCACHE_BASEDIR: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$DIST_DIR"
-
-          export PATH="$CLANG_BIN:$PATH"
-          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
-
-          BUILD_CONFIG="$BUILD_CONFIG" \
-          DIST_DIR="$DIST_DIR" \
-          CC="$CC" HOSTCC="$HOSTCC" \
-          LLVM="$LLVM" LLVM_IAS="$LLVM_IAS" \
-          ARCH="$ARCH" SUBARCH="$SUBARCH" \
-          CCACHE_BASEDIR="$CCACHE_BASEDIR" \
-            build/build.sh
-
-          if [[ ! -s "$DIST_DIR/Image" ]]; then
-            echo "::error::Expected Image was not produced in $DIST_DIR"
-            find "$DIST_DIR" -maxdepth 2 -type f -printf '%p\n' || true
-            exit 1
-          fi
-
-          ls -lh "$DIST_DIR/Image"
-
-      - name: Package AnyKernel3 ZIP
         shell: bash
         run: |
           set -euo pipefail
-
-          AK3_SCRIPT="builder/anykernel/anykernel.sh"
-          if [[ ! -s "$AK3_SCRIPT" ]]; then
-            echo "::error::Missing builder/anykernel/anykernel.sh"
-            echo "Copy anykernel.sh.example and configure it for your exact device."
+          mkdir -p "$DIST_DIR"
+          export PATH="$CLANG_BIN:$PATH"
+          BUILD_CONFIG="$BUILD_CONFIG" DIST_DIR="$DIST_DIR" \
+            CC="$CC" HOSTCC="$HOSTCC" LLVM=1 LLVM_IAS=1 \
+            ARCH=arm64 SUBARCH=arm64 CCACHE_BASEDIR="$CCACHE_BASEDIR" \
+            build/build.sh
+          test -s "$DIST_DIR/Image" || {
+            echo "::error::GKI build did not produce dist/kernel/Image"
+            find "$DIST_DIR" -maxdepth 2 -type f -print || true
             exit 1
-          fi
+          }
+          ls -lh "$DIST_DIR/Image"
 
-          if ! grep -q 'device.name1=sapphiren' "$AK3_SCRIPT" || \
-             ! grep -q 'device.name2=sapphire' "$AK3_SCRIPT" || \
-             ! grep -q 'block=/dev/block/bootdevice/by-name/boot' "$AK3_SCRIPT" || \
-             ! grep -q 'is_slot_device=1' "$AK3_SCRIPT"; then
-            echo "::error::AnyKernel3 installer does not match Sapphire A/B configuration."
-            exit 1
-          fi
-
-          git clone --depth=1 \
-            https://github.com/osm0sis/AnyKernel3.git \
+      - name: Package AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git \
             "$RUNNER_TEMP/AnyKernel3"
-
           cp -a builder/anykernel/. "$RUNNER_TEMP/AnyKernel3/"
           cp dist/kernel/Image "$RUNNER_TEMP/AnyKernel3/Image"
-
           mkdir -p dist/release
-          KERNEL_COMMIT="$(git -C kernel-src/common rev-parse --short HEAD)"
-          ZIP_NAME="AnyKernel3-SukiSU-Nova-GKI-5.15-Android-${ANDROID_TARGET}-${KERNEL_COMMIT}.zip"
+          KERNEL_SHA="$(git -C kernel-src/common rev-parse --short HEAD)"
+          ZIP="AnyKernel3-Sapphiren-Google-GKI-5.15-${KERNEL_SHA}.zip"
+          (cd "$RUNNER_TEMP/AnyKernel3" && zip -r9 \
+            "$GITHUB_WORKSPACE/dist/release/$ZIP" . \
+            -x '.git/*' -x '.github/*')
+          sha256sum "dist/release/$ZIP" > "dist/release/$ZIP.sha256"
 
-          (
-            cd "$RUNNER_TEMP/AnyKernel3"
-            zip -r9 "$GITHUB_WORKSPACE/dist/release/$ZIP_NAME" . \
-              -x '.git/*' \
-              -x '.github/*'
-          )
-
-          sha256sum "dist/release/$ZIP_NAME" \
-            > "dist/release/$ZIP_NAME.sha256"
-
-      - name: Write build information
+      - name: Write build metadata
         if: always()
         shell: bash
         run: |
           mkdir -p dist/release
           {
-            echo "Project: Android GKI 5.15 - SukiSU Nova"
-            echo "Manifest branch: $KERNEL_MANIFEST_BRANCH"
-            echo "Kernel common commit: $(git -C kernel-src/common rev-parse HEAD 2>/dev/null || echo unavailable)"
-            echo "SukiSU Nova backend ref: $SUKISU_REF"
-            echo "SUSFS ref: $SUSFS_REF"
-            echo "Android target label: $ANDROID_TARGET"
-            echo "Kernel generation: Android 13 GKI 5.15"
-            echo "Architecture: arm64"
+            echo "Device target: sapphiren / sapphire (experimental)"
+            echo "Kernel base: Google Common GKI 5.15 LTS"
+            echo "Manifest branch: $MANIFEST_BRANCH"
+            echo "SukiSU Nova commit: $SUKISU_COMMIT"
+            echo "SUSFS commit: $SUSFS_COMMIT"
+            echo "Android userspace label: $ANDROID_TARGET"
             echo "Compiler: Google Clang from Android kernel manifest"
-            echo "Root integration: SukiSU Nova kernel/setup.sh"
-            echo "KPM: CONFIG_KPM=y (if selected by Kconfig)"
-            echo "SUSFS: kernel patch + KernelSU patch"
-            echo "Note: Android target label does not change kernel KMI."
+            echo "Output: Image + AnyKernel3 ZIP"
+            echo "Warning: generic GKI build; device boot/vendor compatibility is not validated."
+            echo "Kernel common commit: $(git -C kernel-src/common rev-parse HEAD 2>/dev/null || echo unavailable)"
           } > dist/release/BUILD_INFO.txt
-
-          if [[ -f kernel-src/integration-versions.txt ]]; then
+          test ! -f kernel-src/integration-versions.txt || \
             cat kernel-src/integration-versions.txt >> dist/release/BUILD_INFO.txt
-          fi
 
-      - name: Show ccache statistics
+      - name: ccache statistics
         if: always()
         run: ccache --show-stats || true
 
-      - name: Upload build artifacts
+      - name: Upload artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: SukiSU-Nova-GKI-5.15-Android-${{ env.ANDROID_TARGET }}
+          name: Sapphiren-Google-Common-GKI-5.15
           path: |
             dist/release/*
             dist/manager/*.apk
@@ -314,17 +209,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Publish GitHub Release
-        if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
+      - name: Publish release
+        if: success() && inputs.publish_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
-          name: SukiSU Nova - Android GKI 5.15
+          tag_name: ${{ inputs.release_tag }}
+          name: Sapphiren Google Common GKI 5.15
           body_path: dist/release/BUILD_INFO.txt
           files: |
             dist/release/*.zip
             dist/release/*.sha256
             dist/manager/*.apk
             manifest.lock.xml
-          generate_release_notes: true
           make_latest: false
