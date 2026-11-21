@@ -1,0 +1,17 @@
+# TEMPLATE FRAGMENT ONLY — not a standalone AnyKernel3 installer.
+# Start from the upstream AnyKernel3/anykernel.sh, then replace its
+# properties() block with this one and verify all values for your device.
+
+properties() { '
+kernel.string=GKI-5.15-SukiSU-SUSFS-KPM
+do.devicecheck=1
+device.name1=REPLACE_ME_DEVICE_CODENAME
+
+# Replace with the real boot partition path for this device.
+# Example paths vary by vendor and A/B layout; do not copy blindly.
+block=REPLACE_ME_BOOT_PARTITION
+
+is_slot_device=1
+ramdisk_compression=auto
+patch_vbmeta_flag=auto
+'; }

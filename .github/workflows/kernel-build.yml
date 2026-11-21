@@ -1,0 +1,308 @@
+name: Android GKI 5.15 - SukiSU + SUSFS + KPM
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_target:
+        description: "Android version on the target device (metadata only; kernel remains GKI 5.15)"
+        required: true
+        type: choice
+        options: ["14", "15", "16", "17"]
+        default: "14"
+      manifest_branch:
+        description: "Android kernel manifest branch"
+        required: true
+        type: string
+        default: "common-android13-5.15-lts"
+      sukisu_ref:
+        description: "SukiSU-Ultra git ref (branch, tag, or commit)"
+        required: true
+        type: string
+        default: "main"
+      susfs_ref:
+        description: "SUSFS git ref"
+        required: true
+        type: string
+        default: "gki-android13-5.15"
+      manager_repo:
+        description: "GitHub repository containing the manager APK release"
+        required: true
+        type: string
+        default: "SukiSU-Ultra/SukiSU-Ultra"
+      publish_release:
+        description: "Publish a GitHub Release after a successful build"
+        required: true
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag to create (workflow_dispatch only)"
+        required: false
+        type: string
+        default: "gki-5.15-test"
+
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gki-515-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  LLVM: "1"
+  LLVM_IAS: "1"
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 8G
+  KERNEL_MANIFEST_URL: https://android.googlesource.com/kernel/manifest
+  KERNEL_MANIFEST_BRANCH: ${{ inputs.manifest_branch || 'common-android13-5.15-lts' }}
+  SUKISU_REF: ${{ inputs.sukisu_ref || 'main' }}
+  SUSFS_REF: ${{ inputs.susfs_ref || 'gki-android13-5.15' }}
+  MANAGER_REPO: ${{ inputs.manager_repo || 'SukiSU-Ultra/SukiSU-Ultra' }}
+  ANDROID_TARGET: ${{ inputs.android_target || '14' }}
+
+jobs:
+  build:
+    name: Build GKI 5.15 / Android ${{ inputs.android_target || 'tag release' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v4
+        with:
+          path: builder
+          fetch-depth: 1
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
+            /opt/ghc /usr/local/share/boost /usr/local/.ghcup
+          df -h
+
+      - name: Install host dependencies and repo tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex git jq \
+            libelf-dev libssl-dev lz4 make pahole \
+            python3 python3-pip python-is-python3 \
+            rsync unzip zip xz-utils zlib1g-dev \
+            device-tree-compiler
+
+          sudo curl -fsSL \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o /usr/local/bin/repo
+          sudo chmod 0755 /usr/local/bin/repo
+          repo --version
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-gki515-${{ env.KERNEL_MANIFEST_BRANCH }}-${{ hashFiles('builder/scripts/**') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-gki515-${{ env.KERNEL_MANIFEST_BRANCH }}-${{ hashFiles('builder/scripts/**') }}-
+            ${{ runner.os }}-gki515-${{ env.KERNEL_MANIFEST_BRANCH }}-
+
+      - name: Configure ccache
+        run: |
+          mkdir -p "$CCACHE_DIR"
+          ccache --set-config=max_size="$CCACHE_MAXSIZE"
+          ccache --set-config=compiler_check=content
+          ccache --set-config=sloppiness=time_macros
+          ccache --zero-stats
+          ccache --show-stats
+
+      - name: Sync Android kernel manifest and Google toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kernel-src
+          cd kernel-src
+
+          repo init \
+            -u "$KERNEL_MANIFEST_URL" \
+            -b "$KERNEL_MANIFEST_BRANCH" \
+            --depth=1 \
+            --partial-clone \
+            --clone-filter=blob:limit=10M
+
+          repo sync -c -j4 --no-tags --optimized-fetch --fail-fast
+          repo manifest -r -o "$GITHUB_WORKSPACE/manifest.lock.xml"
+
+          test -d common
+          test -d build
+          test -f common/build.config.gki.aarch64
+          test -f build/build.sh
+
+          echo "Kernel common revision:"
+          git -C common rev-parse HEAD
+          echo "Manifest branch: $KERNEL_MANIFEST_BRANCH"
+
+      - name: Integrate SukiSU, SUSFS and KPM
+        working-directory: kernel-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ../builder/scripts/integrate-sukisu-susfs.sh
+
+      - name: Configure GKI defconfig
+        working-directory: kernel-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ../builder/scripts/configure-kernel.sh
+
+      - name: Fetch SukiSU manager APK
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash builder/scripts/fetch-manager-apks.sh \
+            "$MANAGER_REPO" "$GITHUB_WORKSPACE/dist/manager"
+
+      - name: Locate Google Clang
+        working-directory: kernel-src
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CLANG_BIN="$(find -L prebuilts/clang/host/linux-x86 \
+            -type f -path '*/bin/clang' -printf '%h\n' \
+            | sort -V | tail -n 1)"
+
+          if [[ -z "$CLANG_BIN" ]]; then
+            echo "::error::Google Clang was not found in the synced manifest."
+            exit 1
+          fi
+
+          echo "$GITHUB_WORKSPACE/kernel-src/$CLANG_BIN" >> "$GITHUB_PATH"
+          echo "CLANG_BIN=$GITHUB_WORKSPACE/kernel-src/$CLANG_BIN" >> "$GITHUB_ENV"
+          "$GITHUB_WORKSPACE/kernel-src/$CLANG_BIN/clang" --version
+
+      - name: Build GKI 5.15 Image
+        working-directory: kernel-src
+        shell: bash
+        env:
+          BUILD_CONFIG: common/build.config.gki.aarch64
+          DIST_DIR: ${{ github.workspace }}/dist/kernel
+          CC: ccache clang
+          HOSTCC: ccache clang
+          LLVM: "1"
+          LLVM_IAS: "1"
+          ARCH: arm64
+          SUBARCH: arm64
+          CCACHE_BASEDIR: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$DIST_DIR"
+
+          export PATH="$CLANG_BIN:$PATH"
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+
+          BUILD_CONFIG="$BUILD_CONFIG" \
+          DIST_DIR="$DIST_DIR" \
+          CC="$CC" HOSTCC="$HOSTCC" \
+          LLVM="$LLVM" LLVM_IAS="$LLVM_IAS" \
+          ARCH="$ARCH" SUBARCH="$SUBARCH" \
+          CCACHE_BASEDIR="$CCACHE_BASEDIR" \
+            build/build.sh
+
+          test -s "$DIST_DIR/Image"
+          ls -lh "$DIST_DIR/Image"
+
+      - name: Package device-configured AnyKernel3 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -s builder/anykernel/anykernel.sh ]]; then
+            echo "::error::Add your device-specific anykernel/anykernel.sh before building."
+            echo "::error::A generic GKI ZIP cannot safely guess the boot partition or device codename."
+            exit 1
+          fi
+
+          if grep -Eq 'REPLACE_ME|YOUR_DEVICE|YOUR_BOOT_PARTITION' \
+            builder/anykernel/anykernel.sh; then
+            echo "::error::AnyKernel3 script still contains template placeholders."
+            exit 1
+          fi
+
+          git clone --depth=1 \
+            https://github.com/osm0sis/AnyKernel3.git \
+            "$RUNNER_TEMP/AnyKernel3"
+
+          cp -a builder/anykernel/. "$RUNNER_TEMP/AnyKernel3/"
+          cp dist/kernel/Image "$RUNNER_TEMP/AnyKernel3/Image"
+
+          mkdir -p dist/release
+          VERSION="$(git -C kernel-src/common describe --always --dirty 2>/dev/null || git -C kernel-src/common rev-parse --short HEAD)"
+          ZIP_NAME="AnyKernel3-GKI-5.15-Android-${ANDROID_TARGET}-${VERSION}.zip"
+
+          (
+            cd "$RUNNER_TEMP/AnyKernel3"
+            zip -r9 "$GITHUB_WORKSPACE/dist/release/$ZIP_NAME" . \
+              -x '.git/*' \
+              -x '.github/*'
+          )
+
+          test -s "dist/release/$ZIP_NAME"
+          sha256sum "dist/release/$ZIP_NAME" \
+            > "dist/release/$ZIP_NAME.sha256"
+
+      - name: Write build metadata
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p dist/release
+          {
+            echo "Kernel manifest: $KERNEL_MANIFEST_BRANCH"
+            echo "Kernel common commit: $(git -C kernel-src/common rev-parse HEAD 2>/dev/null || echo unavailable)"
+            echo "SukiSU ref: $SUKISU_REF"
+            echo "SUSFS ref: $SUSFS_REF"
+            echo "Android target label: $ANDROID_TARGET"
+            echo "Architecture: arm64"
+            echo "Compiler: Google Clang from Android kernel manifest"
+            echo "Root: SukiSU-Ultra"
+            echo "SUSFS: enabled by patch integration"
+            echo "KPM: CONFIG_KPM=y"
+          } > dist/release/BUILD_INFO.txt
+
+      - name: Show ccache statistics
+        if: always()
+        run: ccache --show-stats || true
+
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GKI-5.15-SukiSU-SUSFS-Android-${{ env.ANDROID_TARGET }}
+          path: |
+            dist/release/*
+            dist/manager/*.apk
+            manifest.lock.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          name: GKI 5.15 - SukiSU / SUSFS / KPM
+          body_path: dist/release/BUILD_INFO.txt
+          files: |
+            dist/release/*.zip
+            dist/release/*.sha256
+            dist/manager/*.apk
+            manifest.lock.xml
+          generate_release_notes: true
+          make_latest: false
