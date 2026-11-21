@@ -1,17 +1,19 @@
-# TEMPLATE FRAGMENT ONLY — not a standalone AnyKernel3 installer.
-# Start from the upstream AnyKernel3/anykernel.sh, then replace its
-# properties() block with this one and verify all values for your device.
+#!/sbin/sh
+# AnyKernel3 installer template.
+# Rename this file to anykernel.sh and configure it for your exact device.
+# Do NOT flash this template as-is.
 
 properties() { '
-kernel.string=GKI-5.15-SukiSU-SUSFS-KPM
+kernel.string=GKI 5.15 - SukiSU Nova
 do.devicecheck=1
-device.name1=REPLACE_ME_DEVICE_CODENAME
-
-# Replace with the real boot partition path for this device.
-# Example paths vary by vendor and A/B layout; do not copy blindly.
-block=REPLACE_ME_BOOT_PARTITION
-
-is_slot_device=1
-ramdisk_compression=auto
-patch_vbmeta_flag=auto
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=REPLACE_ME
 '; }
+
+# IMPORTANT:
+# Configure the correct boot partition and A/B slot handling for your device.
+# Add the tested AnyKernel3 install flow required by your device.
+# This template intentionally does not write to any partition.

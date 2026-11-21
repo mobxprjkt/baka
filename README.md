@@ -1,78 +1,79 @@
-# Android GKI 5.15 - SukiSU / SUSFS / KPM builder
+# Android GKI 5.15 - SukiSU Nova + SUSFS + KPM
 
-This repository is a GitHub Actions builder scaffold for the Android common
-kernel manifest branch `common-android13-5.15-lts`.
+A GitHub Actions scaffold for building the Android Common Kernel 5.15 GKI
+lineage with Google Clang, ccache, SukiSU Nova kernel integration, SUSFS,
+KPM, manager APK download, AnyKernel3 packaging, and GitHub Releases.
 
-## Included
+## Source layout and integration model
 
-- Google Android kernel manifest sync (including Google Clang prebuilts)
-- SukiSU-Ultra integration
-- SUSFS 5.15 patch integration
-- KPM config (`CONFIG_KPM=y`)
-- ccache with GitHub Actions cache
-- SukiSU manager APK download
-- AnyKernel3 ZIP packaging
-- GitHub Releases publishing
+- Google kernel manifest: `common-android13-5.15-lts`
+- Kernel source project in the manifest: `kernel/common`, branch
+  `android13-5.15-lts`
+- Build config: `common/build.config.gki.aarch64`
+- Build entrypoint: `build/build.sh`
+- SukiSU Nova: official `kernel/setup.sh` from `SukiSU-Nova/SukiSU-Nova`
+- SUSFS: `gki-android13-5.15`
+- KPM: `CONFIG_KPM=y`
+- Output: `Image`, then AnyKernel3 ZIP
 
-## Important compatibility note
+The official SukiSU Nova setup script currently installs its kernel backend
+under `KernelSU/` and registers `common/drivers/kernelsu`. The script is fetched
+from the Nova repository at build time. The manager app repository and kernel
+backend are related but are not the same thing.
 
-The source remains Linux 5.15 / Android 13 GKI lineage. The Android 14/15/16/17
-workflow input is a target-device label only; it does not turn a 5.15 kernel
-into the native GKI kernel generation for every Android release.
+## Important compatibility warning
 
-Some devices upgraded to Android 14-17 continue to use a 5.15 kernel/KMI and
-may be candidates, but compatibility must be checked against the exact device,
-KMI, vendor modules, boot image format, and required ABI symbols. Android 15+
-devices commonly use newer kernel generations. Do not flash this build to a
-device merely because its Android version matches the workflow label.
+This project builds the Android 13 GKI 5.15 kernel lineage. The workflow's
+Android target input is a label for your device's installed Android version;
+it does not change the kernel KMI. Android 14 devices may use a 5.15 KMI, but
+Android 15/16/17 devices generally correspond to newer kernel generations
+(6.6/6.12/6.18 in the current Nova compatibility overview). Do not assume a
+5.15 Image is compatible with every Android 14-17 device.
+
+Before flashing, verify:
+- Exact device codename and SoC
+- Exact kernel version and KMI
+- Vendor modules and protected exports
+- Boot/vendor_boot/dtbo layout
+- AVB and slot handling
+- Recovery compatibility
 
 ## Repository setup
 
-1. Add this builder scaffold to your own GitHub repository.
+1. Create a new GitHub repository and upload this project.
 2. Configure `anykernel/anykernel.sh` for your exact device.
-3. Review the SukiSU and SUSFS upstream revisions you intend to build.
-4. Run Actions -> Android GKI 5.15 - SukiSU + SUSFS + KPM -> Run workflow.
-5. Enable `publish_release` only after the build and device test pass.
+3. Review and pin tested SukiSU and SUSFS refs before production releases.
+4. Open Actions -> Android GKI 5.15 - SukiSU Nova + SUSFS + KPM.
+5. Run workflow_dispatch.
+6. Enable `publish_release` only after the build and device test pass.
 
-## Defaults
+## Workflow inputs
 
-- Manifest: `common-android13-5.15-lts`
-- SukiSU ref: `main`
-- SUSFS ref: `gki-android13-5.15`
-- Architecture: `arm64`
-- Build config: `common/build.config.gki.aarch64`
-- Output: `Image`
-- Compiler: Google Clang from the synced Android manifest
-- Cache: ccache (8 GB)
+- `android_target`: metadata label only.
+- `manifest_branch`: defaults to `common-android13-5.15-lts`.
+- `sukisu_ref`: backend ref passed to the official Nova setup script.
+- `susfs_ref`: defaults to `gki-android13-5.15`.
+- `manager_repo`: defaults to `SukiSU-Nova/SukiSU-Nova`.
+- `publish_release`: create a GitHub Release after successful build.
 
-## SUSFS patch compatibility
+## Build and release artifacts
 
-The SUSFS kernel patch and the SukiSU-side patch must match each other. The
-integration script applies both with `patch --batch --forward`; it intentionally
-fails on rejected hunks instead of silently producing a partially patched tree.
-
-For reproducible release builds, pin `sukisu_ref` and `susfs_ref` to tested
-commit hashes rather than leaving them on moving branches.
-
-## AnyKernel3 is device-specific
-
-The workflow downloads the upstream AnyKernel3 framework, then overlays your
-`anykernel/` directory and copies the compiled `Image`.
-
-A valid `anykernel.sh` must identify the correct device and boot partition.
-There is no universally safe recovery ZIP for all GKI devices. Keep a stock
-boot image backup and verify the installer before flashing.
-
-## Build outputs
-
-- `AnyKernel3-GKI-5.15-Android-<target>-<commit>.zip`
-- `.sha256` checksum
-- SukiSU manager APK
+- AnyKernel3 ZIP
+- SHA-256 checksum
+- SukiSU Nova manager APK
 - `manifest.lock.xml`
 - `BUILD_INFO.txt`
 
-## License
+## Reproducibility
 
-The kernel and third-party components retain their respective upstream
-licenses. Review the licenses of SukiSU-Ultra, SUSFS, Google kernel sources,
-and AnyKernel3 before redistributing builds.
+For production, pin `sukisu_ref` and `susfs_ref` to tested commit hashes. The
+workflow records the kernel manifest and integration refs. Moving branch names
+are convenient for testing but are not immutable build inputs.
+
+## Known boundaries
+
+- A generic AnyKernel3 ZIP cannot safely infer a device's boot partition.
+- SukiSU Nova's manager APK is not the same artifact as the kernel backend.
+- KPM is enabled by `CONFIG_KPM`; it is not a separate `.kpm` module.
+- SUSFS requires both the kernel-side patch and the KernelSU-side patch.
+- Patch failures stop the build; there is no automatic fuzzy patching.
