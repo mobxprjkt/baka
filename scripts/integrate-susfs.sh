@@ -20,8 +20,7 @@ git clone --depth=1 --branch "$SUSFS_REF" "$SUSFS_REPO" "$SUSFS_DIR"
 
 PATCH_DIR="$SUSFS_DIR/kernel_patches"
 KSU_PATCH="$PATCH_DIR/KernelSU/10_enable_susfs_for_ksu.patch"
-KERNEL_PATCH="$(find "$PATCH_DIR" -maxdepth 1 -type f \
-  -name '50_add_susfs_in_kernel-5.15.patch' -print -quit)"
+KERNEL_PATCH="$PATCH_DIR/50_add_susfs_in_gki-android13-5.15.patch"
 
 if [[ ! -s "$KSU_PATCH" ]]; then
   echo "::error::SUSFS KernelSU patch not found: $KSU_PATCH"
@@ -34,14 +33,14 @@ if [[ -z "$KERNEL_PATCH" || ! -s "$KERNEL_PATCH" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$PATCH_DIR/fs/susfs.c" || ! -f "$PATCH_DIR/include/linux/susfs.h" ]]; then
-  echo "::error::SUSFS source files are missing."
+if [[ ! -d "$PATCH_DIR/fs" || ! -d "$PATCH_DIR/include/linux" ]]; then
+  echo "::error::SUSFS source directories are missing."
   exit 1
 fi
 
-echo "[SUSFS] Copying kernel source files"
-install -m 0644 "$PATCH_DIR/fs/susfs.c" "$COMMON/fs/susfs.c"
-install -m 0644 "$PATCH_DIR/include/linux/susfs.h" "$COMMON/include/linux/susfs.h"
+echo "[SUSFS] Copying all SUSFS kernel source and header files"
+cp -a "$PATCH_DIR/fs/." "$COMMON/fs/"
+cp -a "$PATCH_DIR/include/linux/." "$COMMON/include/linux/"
 
 echo "[SUSFS] Checking and applying SukiSU-side patch"
 (
